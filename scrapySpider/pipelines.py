@@ -20,40 +20,39 @@ class ScrapyspiderPipeline(object):
         self.mongo_client = MongoClient(mongodb_uri)
         self.db = self.mongo_client['stock']
         self.col = self.db['table']
+        self.hy = self.db['hy']
 
     @classmethod
     def from_settings(cls, settings):
         mongodb_uri = settings.get('MONGODB_URI', MONGODB_URI)
         return cls(mongodb_uri)
 
+    # 保存股票价格信息，例子 url = http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
+    # http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&period=1day&type=before&begin=1407602252104&end=1439138252104
     def save(self, url, data):
+        # get mongo data
+        if self.col.find_one() is None:
+            self.col.ensure_index('stockId', unique=True, backgroud=True)
+
         # get stock id
-        index, index2 = url.find('symbol='), url.find('code')
+        index = url.find('symbol=')
         if index >= 0:
             stockId = url[index+7:index+15]
-        elif index2 >= 0:
-            stockId = url[index2+5:index2+13]
         else:
             print 'error to parse stock id'
             return
 
-        # get mongo data
-        if self.col.find_one() is None:
-            self.col.ensure_index('stockId', backgroud=True)
-
-        spec = {'stockId': stockId}
-        _data = self.col.find_one(spec)
+        _data = self.col.find_one({'stockId': stockId})
         if not _data:
             _data = {'stockId': stockId}
-
-        if url.find('period=1d') >= 0 and not data.get('chartlist'):
-            print 'empty in the charlist!'
-            return
 
         # get data field
         if url.find('period=1day') >= 0:
             _data['1day'] = data['chartlist']
         elif url.find('period=1d&one_min=1') >= 0:
+            # delete time info except the first and last one
+            for i in range(1, len(data['chartlist'])-1):
+                del data['chartlist'][i]['time']
             if '0day' not in _data:
                 _data['0day'] = [data['chartlist']]
             elif _data['0day'][-1][0]['time'] != data['chartlist'][0]['time']:
@@ -62,10 +61,6 @@ class ScrapyspiderPipeline(object):
                     _data['0day'] = _data['0day'][1:]
             else:
                 _data['0day'][-1] = data['chartlist']
-        elif url.find('code=') >= 0:
-            _data['totalShares'] = data[stockId]['totalShares']
-            _data['float_shares'] = data[stockId]['float_shares']
-            _data['current'] = data[stockId]['current']
         else:
             print 'error for this kind of url'
             return
@@ -73,11 +68,71 @@ class ScrapyspiderPipeline(object):
         # write data
         self.col.save(_data)
 
+    # 保存行业的所有股票信息，例子 url = http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/1/1/zq
+    def save_hy_info(self, url, data):
+        # get mongo data
+        if self.hy.find_one() is None:
+            self.hy.ensure_index('name', unique=True, backgroud=True)
+
+        hy = url[url.rfind('/')+1:]
+        _data = self.hy.find_one({'name':hy})
+        if not _data:
+            _data = {'name': hy}
+
+        stockIdList = []
+        for stockInfo in data['data']:
+            stockId = stockInfo['stockcode']
+            if stockId[0] == '6':
+                stockIdList.append('SH' + stockId)
+            elif stockId[0] == '0' or stockId[0] == '3':
+                stockIdList.append('SZ' + stockId)
+        _data['stockIdList'] = stockIdList
+        self.hy.save(_data)
+
+    # 保存股票的行业信息，例子 url = http://stockpage.10jqka.com.cn/spService/000687/Header/realHeader
+    def save_stock_hy_info(self, url, data):
+        index = url.find("spService")
+        stockId = url[index+10:index+16]
+        if stockId[0] == '6':
+            stockId = 'SH' + stockId
+        elif stockId[0] == '0' or stockId[0] == '3':
+            stockId = 'SZ' + stockId
+
+        _data = self.col.find_one({'stockId': stockId})
+        if not _data: return
+        _data['hy'] = data['fieldname']
+        _data['hyname'] = data['fieldjp']
+        self.col.save(_data)
+
+    # 保存股票股数信息，例子 url = http://xueqiu.com/v4/stock/quote.json?code=SZ000687
+    def save_stock_number_info(self, url, data):
+        # get mongo data
+        if self.col.find_one() is None:
+            self.col.ensure_index('stockId', unique=True, backgroud=True)
+
+        # get stock id
+        stockId = url[-8:]
+        _data = self.col.find_one({'stockId': stockId})
+        if not _data:
+            _data = {'stockId': stockId}
+
+        _data['totalShares'] = data[stockId]['totalShares']
+        _data['float_shares'] = data[stockId]['float_shares']
+        _data['current'] = data[stockId]['current']
+        self.col.save(_data)
+
 
     def process_item(self, item, spider):
         #print item
-
-        self.save(item['src'], item['content'])
+        url, data = item['src'], item['content']
+        if url.startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 行业信息
+            self.save_hy_info(url, data)
+        elif url.startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业信息
+            self.save_stock_hy_info(url, data)
+        elif url.startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票股数信息
+            self.save_stock_number_info(url, data)
+        else:
+            self.save(url, data)
 
         return item
 

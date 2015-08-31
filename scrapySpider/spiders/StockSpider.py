@@ -47,8 +47,8 @@ def crawl(url, try_num=3):
 # http://xueqiu.com/v4/stock/quote.json?code=SZ000681  个股最新价格
 # http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1  个股当天销售数据
 # http://xueqiu.com/stock/pankou.json?symbol=SZ000681&_=1438135032243 盘口数据
-# http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000687&period=1day&type=before&begin=1407602252104&end=1439138252104&_=1439138252105
-# http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000687&period=1week&type=normal&begin=1312994077246&end=1439138077246&_=1439138077247
+# http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000687&period=1day&type=before&begin=1407602252104&end=1439138252104
+# http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000687&period=1week&type=normal&begin=1312994077246&end=1439138077246
 headers = {
     #'User-Agent':'Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.1.6) Gecko/20091201 Firefox/3.5.6'
     'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.107 Safari/537.36'
@@ -103,12 +103,19 @@ class StockSpider(RedisSpider):
         try:
             item['src'] = response.url
             item['content'] = json.loads(response.body_as_unicode())
-            if 'success' in item['content'] and item['content']['success']=='true' \
-                    and 'chartlist' in item['content'] and item['content']['chartlist']:
-                yield item
-            else:
+            if item['src'].startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 行业信息
+                if item['content'].get('data'):
+                    yield item
+            elif item['src'].startswith("http://xueqiu.com/stock/forchart/stocklist.json?symbol=") or \
+                item['src'].startswith("http://xueqiu.com/stock/forchartk/stocklist.json?symbol="): # 股票价格
+                if item['content'].get('success')=='true' and item['content'].get('chartlist'):
+                    yield item
+            elif item['src'].startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票股数
                 index = item['src'].find('code=')
                 if index >= 0 and item['src'][index+5:index+13] in item['content']:
+                    yield item
+            elif item['src'].startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业
+                if item['content'].get('fieldname') and item['content'].get('fieldjp'):
                     yield item
         except Exception as e:
             self.log('fail to parse content from response. url: {0}, err: {1}.'
