@@ -27,10 +27,11 @@ class ScrapyspiderPipeline(object):
         mongodb_uri = settings.get('MONGODB_URI', MONGODB_URI)
         return cls(mongodb_uri)
 
-    # 保存股票价格信息，例子 url = http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
-    # http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&period=1day&type=before&begin=1407602252104&end=1439138252104
+    # 保存股票价格信息，例子
+    # http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
+    # http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&\
+    #   period=1day&type=before&begin=1407602252104&end=1439138252104
     def save(self, url, data):
-        # get mongo data
         if self.col.find_one() is None:
             self.col.ensure_index('stockId', unique=True, backgroud=True)
 
@@ -64,8 +65,6 @@ class ScrapyspiderPipeline(object):
         else:
             print 'error for this kind of url'
             return
-
-        # write data
         self.col.save(_data)
 
     # 保存行业的所有股票信息，例子 url = http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/1/1/zq
@@ -116,9 +115,14 @@ class ScrapyspiderPipeline(object):
         if not _data:
             _data = {'stockId': stockId}
 
-        _data['totalShares'] = data[stockId]['totalShares']
-        _data['float_shares'] = data[stockId]['float_shares']
-        _data['current'] = data[stockId]['current']
+        _data['totalShares'] = float(data[stockId]['totalShares'])
+        _data['float_shares'] = float(data[stockId]['float_shares'])
+        _data['flag'] = data[stockId]['flag']  # "2"：停牌  “1”：正常  "0"：退市  “3”: 新股
+
+        # 每股收益 每股净资产 每股股息 市盈率 市净率 市销率
+        for key in ['current','volumeAverage','eps','net_assets', 'dividend','pe_ttm','pe_lyr','pb','psr']:
+            if data[stockId][key]: _data[key] = float(data[stockId][key])
+            else: _data[key] = 0.0
         self.col.save(_data)
 
 
