@@ -4,10 +4,10 @@ import time
 import datetime
 import re
 import sys
-import numpy as np
+import numpy
 import matplotlib.dates as dates
 from matplotlib.dates import DateFormatter, WeekdayLocator, HourLocator, DayLocator, MONDAY
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as pyplot
 import matplotlib.finance as finance
 from pymongo import MongoClient
 
@@ -53,6 +53,7 @@ class Stock(object):
 
         return True
 
+
     # "Mon Aug 17 09:30:00 +0800 2015"
     def get_time(self, cur_time='09:30:00'):
         Weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] # 0 1 2 3 4
@@ -77,6 +78,7 @@ class Stock(object):
                 break
 
         return datetime.date(year, month, day)
+
 
     # 抓取行业的股指股票信息
     def crawl_hy_url_list(self):
@@ -161,22 +163,64 @@ class Stock(object):
             url = "http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/2/1/" + hy
             self.update_redis_info(url)
 
+
     # http://stockpage.10jqka.com.cn/spService/000687/Funds/realFunds 行业资金流向
     # http://stockpage.10jqka.com.cn/spService/000687/Header/realHeader 股票行业信息
     def crawl_stock_hy_info(self):
         stockIdList = self.col.find({}, {'stockId':1, 'hy':1, 'hyname':1})
-        for stockIdInfo in stockIdList:
-            if 'hy' in stockIdInfo: continue
-            stockId = stockIdInfo['stockId']
+        for stockInfo in stockIdList:
+            if 'hy' in stockInfo: continue
+            stockId = stockInfo['stockId']
 
             url = 'http://stockpage.10jqka.com.cn/spService/' + stockId[2:] + '/Header/realHeader'
             self.update_redis_info(url)
 
+
     # 股票逐笔成交信息，例子
     # http://hqdigi2.eastmoney.com/EM_Quote2010NumericApplication/CompatiblePage.aspx?Type=OB&stk=6006631&page=5
     # http://hqdigi2.eastmoney.com/EM_Quote2010NumericApplication/CompatiblePage.aspx?Type=OB&stk=0006812&page=2
+    # end前5分钟  http://quotes.money.163.com/service/zhubi_ajax.html?symbol=002637&end=13%3A37%3A00
     def crawl_stock_trade_info(self):
         pass
+
+
+    # http://xueqiu.com/stock/pankou.json?symbol=SZ000681
+    def crawl_stock_pankou_info(self):
+        stockIdList = self.col.find({}, {'stockId':1, 'pankou':1, 'flag':1})
+        for stockInfo in stockIdList:
+            if stockInfo.get('flag') != '1': continue
+            if 'pankou' in stockInfo and stockInfo['pankou']['datetime'] == datetime.date.today().ctime():
+                continue
+            stockId = stockInfo['stockId']
+
+            url = 'http://xueqiu.com/stock/pankou.json?symbol=' + stockId
+            self.update_redis_info(url)
+        self.update_redis_info('http://xueqiu.com')
+
+    def summary_stock_pankou_info(self, default_x=5):
+        stockIdList = self.col.find({}, {'stockId':1, 'pankou':1, 'flag':1})
+        ratio = []
+        for stockInfo in stockIdList:
+            if stockInfo.get('flag') != '1' or not stockInfo.get('pankou'): continue
+            ratio.append(stockInfo['pankou']['ratio'])
+
+        bin = numpy.arange(-100, 101, default_x)
+        pyplot.hist(ratio, bin)
+        pyplot.show()
+
+
+    # http://xueqiu.com/v4/stock/quote.json?code=SZ000681
+    def crawl_stock_basic_info(self):
+        stockIdList = self.col.find({}, {'stockId':1, 'totalShares':1, 'flag':1, 'eps':1, 'name':1})
+        for stockInfo in stockIdList:
+            if 'name' in stockInfo and 'flag' in stockInfo and 'eps' in stockInfo:
+                continue
+            stockId = stockInfo['stockId']
+
+            url = 'http://xueqiu.com/v4/stock/quote.json?code=' + stockId
+            self.update_redis_info(url)
+        self.update_redis_info('http://xueqiu.com')
+
 
     def crawl_stock_price_info(self):
         stockid = [i for i in range(1,101)]
@@ -207,9 +251,6 @@ class Stock(object):
             end = int(time.time()*1000)
             begin = end - 90*24*3600*1000
 
-            if 'totalShares' not in _data or 'flag' not in _data or 'eps' not in _data:
-                url = 'http://xueqiu.com/v4/stock/quote.json?code=' + id
-                self.update_redis_info(url)
             if _data.get('flag') != "1": continue # 停牌
 
             # http://xueqiu.com/stock/pankou.json?symbol=SZ000681&_=1438135032243 盘口数据
@@ -277,9 +318,9 @@ class Stock(object):
 
     # 显示多个股票列表的k线图（叠加）
     def draw_forchartk(self, stockIdList):
-        fig, ax = plt.subplots(figsize=(10,5))
-        plt.xlabel("Date")
-        plt.ylabel("Number")
+        fig, ax = pyplot.subplots(figsize=(10,5))
+        pyplot.xlabel("Date")
+        pyplot.ylabel("Number")
 
         mondays = WeekdayLocator(MONDAY)        # major ticks on the mondays
         alldays    = DayLocator()              # minor ticks on the days
@@ -302,11 +343,11 @@ class Stock(object):
         ax.xaxis_date()
         #ax.autoscale_view()
 
-        plt.legend()
-        plt.show()
+        pyplot.legend()
+        pyplot.show()
 
     # 取stockIdList中股票数据
-    def generate_training_data(self, stockIdList=None, default_day=15, test_day=5):
+    def generate_training_data(self, stockIdList=None, default_day=10, test_day=5):
         start_time = time.time()
         if stockIdList is None:
             stockIdList = self.col.find({}, {'stockId':1})
@@ -316,7 +357,8 @@ class Stock(object):
         X, Y, X_test, Y_test, X_latest, IdList = [], [], [], [], [], []
         for stockId in stockIdList:
             info = self.col.find_one({'stockId':stockId},{'0day':0})
-            if info.get('flag') != "1" or info.get('current') == 0: continue # 停牌
+            if info.get('flag')!="1" or info.get('current')==0: continue # 停牌
+            if 'name' in info and info['name'].find('ST') >= 0: continue # ST股票
             price_list = info['1day']
 
             list_len = len(price_list)
@@ -324,31 +366,39 @@ class Stock(object):
             turnrate = [price['turnrate'] for price in price_list]
             if sum(volume) == 0 or sum(turnrate) == 0: continue
 
-            avg_volume, avg_turnrate = sum(volume)/list_len, sum(turnrate)/list_len
+            avg_volume, avg_turnrate = sum(volume)/list_len/1e8, sum(turnrate)/list_len
             Total, Float, Avg = info['totalShares']/1e8, info['float_shares']/1e8, info['volumeAverage']/1e8
-            for i in range(default_day-1, list_len):
+            for i in range(default_day, list_len): # 第一个数据只使用close价格
                 avg_price = sum([price['close'] for price in price_list[i-default_day+1:i+1]])/default_day
 
                 x = []
                 for j in range(i-default_day+1, i+1):
-                    for key in ['open', 'close', 'high', 'low', 'ma5', 'ma10', 'ma20', 'ma30']:
-                        x.append(price_list[j][key]/avg_price)
+                    for key in ['open', 'close', 'high', 'low']:
+                        x.append( 100.0*price_list[j][key]/price_list[j-1]['close']-100.0 )
+                    for key in ['ma5', 'ma10', 'ma20', 'ma30']:
+                        x.append( 100.0*price_list[j][key]/price_list[j]['close']-100.0 )
                     x.append(price_list[j]['turnrate']/avg_turnrate) # 归一化交易量
-                    for key in ['percent', 'dif', 'dea', 'macd']:
+                    #for key in ['percent', 'dif', 'dea', 'macd']:
+                    for key in ['dif', 'dea', 'macd']:
                         x.append(price_list[j][key])
 
                 close = price_list[i]['close']
-                x.extend([Total, Float, Avg, Total*close, Float*close, Avg*close, avg_volume*close/1e8])
+                x.extend([Total, Float, Avg, Total*close, Float*close, Avg*close, avg_volume*close])
                 x.extend([info[key]/close for key in ['eps','net_assets', 'dividend']])
                 x.extend([info[key]*close/info['current'] for key in ['pe_ttm','pe_lyr','pb','psr']])
                 if i < list_len-test_day:
                     X.append(x)
+                    #Y.append(price_list[i+1]['percent']/10.0)
                     Y.append(price_list[i+1]['percent'] > 1.5 and 1. or -1.)
+                    #if price_list[i+1]['percent'] > 6.0: # 重复 提高权重
+                    #    X.append(x)
+                    #    Y.append(1.0)
                 elif i == list_len-1:
                     X_latest.append(x)
                     IdList.append(stockId)
                 else:
                     X_test.append(x)
+                    #Y_test.append(price_list[i+1]['percent']/10.0)
                     Y_test.append(price_list[i+1]['percent'] > 1.5 and 1. or -1.)
         print len(Y), sum(Y)
         print 'time: ', time.time()-start_time
@@ -356,11 +406,13 @@ class Stock(object):
 
     def predict_result(self, model, X, Y=None, stockIdList=None):
         pp, pn, np, nn = 0, 0, 0, 0
+        scoreList = []
         for i in range(len(X)):
             score = model.predict(X[i])
+            scoreList.append(score[0])
             if score[0] > 0.8 and stockIdList: print stockIdList[i]
 
-            if Y and Y[i] == 1:
+            if Y and Y[i] >= 0.2:
                 if score[0] >= 0.5: pp += 1
                 else: pn += 1
             else:
@@ -371,6 +423,14 @@ class Stock(object):
             print 'mean error: ', mean_squared_error(Y, model.predict(X))
         else:
             print np, nn, 'predict p: ', 1.0*np/(np+nn)
+
+        print min(scoreList), max(scoreList)
+        bin = numpy.arange(-2, 2, 0.1)
+        pyplot.hist(scoreList, bin)
+        pyplot.show()
+
+        return scoreList
+
 
 
     def training_model(self, X, Y, X_test, Y_test, X_latest, stockIdList):
@@ -397,8 +457,9 @@ class Stock(object):
 
         fi = GBR.feature_importances_
         fi = [round(v,4) for v in fi]
-        for i in range(0,len(fi),13):
-            print fi[i:i+13]
+        for i in range(0,len(fi),12):
+            print fi[i:i+12]
+
 
 
 
@@ -413,13 +474,23 @@ if __name__ == '__main__':
     #stock.init(sys.argv[1])
     stock.init('127.0.0.1:6379')
 
-    if len(sys.argv) < 2 or sys.argv[1] == 'model':
-        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(None,default_day=15,test_day=5)
+    if False:
+        stock.summary_stock_pankou_info()
+
+    elif len(sys.argv) < 2 or sys.argv[1] == 'model':
+        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(None,default_day=10,test_day=4)
         print len(X), len(Y), len(X_test), len(Y_test), len(X_latest), len(IdList)
-        stock.training_model(X, Y, X_test, Y_test, X_latest, IdList)
+        #print X[-1], Y[-1]
+        scoreList = stock.training_model(X, Y, X_test, Y_test, X_latest, IdList)
 
     elif sys.argv[1] == 'stock_price':
         stock.crawl_stock_price_info()
+
+    elif sys.argv[1] == 'stock_basic':
+        stock.crawl_stock_basic_info()
+
+    elif sys.argv[1] == 'stock_pankou':
+        stock.crawl_stock_pankou_info()
 
     elif sys.argv[1] == 'hy_url':
         stock.crawl_hy_url_list()

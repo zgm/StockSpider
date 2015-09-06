@@ -5,7 +5,7 @@
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
 
-
+import datetime
 from pymongo import MongoClient
 from scrapySpider.items import stockItem
 
@@ -31,7 +31,7 @@ class ScrapyspiderPipeline(object):
     # http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
     # http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&\
     #   period=1day&type=before&begin=1407602252104&end=1439138252104
-    def save(self, url, data):
+    def save_stock_price_info(self, url, data):
         if self.col.find_one() is None:
             self.col.ensure_index('stockId', unique=True, backgroud=True)
 
@@ -104,8 +104,7 @@ class ScrapyspiderPipeline(object):
         self.col.save(_data)
 
     # 保存股票股数信息，例子 url = http://xueqiu.com/v4/stock/quote.json?code=SZ000687
-    def save_stock_number_info(self, url, data):
-        # get mongo data
+    def save_stock_basic_info(self, url, data):
         if self.col.find_one() is None:
             self.col.ensure_index('stockId', unique=True, backgroud=True)
 
@@ -115,6 +114,7 @@ class ScrapyspiderPipeline(object):
         if not _data:
             _data = {'stockId': stockId}
 
+        _data['name'] = data[stockId]['name']
         _data['totalShares'] = float(data[stockId]['totalShares'])
         _data['float_shares'] = float(data[stockId]['float_shares'])
         _data['flag'] = data[stockId]['flag']  # "2"：停牌  “1”：正常  "0"：退市  “3”: 新股
@@ -125,18 +125,39 @@ class ScrapyspiderPipeline(object):
             else: _data[key] = 0.0
         self.col.save(_data)
 
+    # 保存股票盘口信息，例子 url = http://xueqiu.com/stock/pankou.json?symbol=SZ000687
+    def save_stock_pankou_info(self, url, data):
+        if self.col.find_one() is None:
+            self.col.ensure_index('stockId', unique=True, backgroud=True)
+
+        # get stock id
+        stockId = url[-8:]
+        _data = self.col.find_one({'stockId': stockId})
+        if not _data:
+            _data = {'stockId': stockId}
+
+        _data['pankou'] = data
+        _data['pankou']['datetime'] = datetime.date.today().ctime()
+        self.col.save(_data)
+
 
     def process_item(self, item, spider):
         #print item
         url, data = item['src'], item['content']
         if url.startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 行业信息
             self.save_hy_info(url, data)
+
         elif url.startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业信息
             self.save_stock_hy_info(url, data)
-        elif url.startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票股数信息
-            self.save_stock_number_info(url, data)
-        else:
-            self.save(url, data)
+
+        elif url.startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息
+            self.save_stock_basic_info(url, data)
+
+        elif url.startswith("http://xueqiu.com/stock/pankou.json?symbol="): # 股票盘口信息
+            self.save_stock_pankou_info(url, data)
+
+        else: # 股票价格信息
+            self.save_stock_price_info(url, data)
 
         return item
 
