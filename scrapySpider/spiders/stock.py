@@ -185,6 +185,7 @@ class Stock(object):
 
 
     # http://xueqiu.com/stock/pankou.json?symbol=SZ000681
+    # http://stockpage.10jqka.com.cn/spService/300025/Header/realHeader
     def crawl_stock_pankou_info(self):
         stockIdList = self.col.find({}, {'stockId':1, 'pankou':1, 'flag':1})
         for stockInfo in stockIdList:
@@ -258,8 +259,7 @@ class Stock(object):
                 url = 'http://xueqiu.com/stock/forchart/stocklist.json?symbol=' + id + '&period=1d&one_min=1'
                 self.update_redis_info(url)
             if not _data.get('1day') or _data['1day'][-1]['time'] != self.get_time('00:00:00'):
-                url = 'http://xueqiu.com/stock/forchartk/stocklist.json?symbol=' + id + '&period=1day\
-                    &type=before&begin=' + str(begin) + '&end=' + str(end)
+                url = 'http://xueqiu.com/stock/forchartk/stocklist.json?symbol=' + id + '&period=1day&type=before&begin=' + str(begin) + '&end=' + str(end)
                 self.update_redis_info(url)
 
         #self.update_redis_info('http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681\
@@ -350,12 +350,12 @@ class Stock(object):
     def generate_training_data(self, stockIdList=None, default_day=10, test_day=5):
         start_time = time.time()
         if stockIdList is None:
-            stockIdList = self.col.find({}, {'stockId':1})
-            stockIdList = [stockIdInfo['stockId'] for stockIdInfo in stockIdList]
+            stockIdList = self.col.find({}, {'stockId':1, 'name':1})
+            stockIdList = [[Info['stockId'],Info['name']] for Info in stockIdList]
         print 'time: ', time.time()-start_time
 
         X, Y, X_test, Y_test, X_latest, IdList = [], [], [], [], [], []
-        for stockId in stockIdList:
+        for stockId, name in stockIdList:
             info = self.col.find_one({'stockId':stockId},{'0day':0})
             if info.get('flag')!="1" or info.get('current')==0: continue # 停牌
             if 'name' in info and info['name'].find('ST') >= 0: continue # ST股票
@@ -395,7 +395,7 @@ class Stock(object):
                     #    Y.append(1.0)
                 elif i == list_len-1:
                     X_latest.append(x)
-                    IdList.append(stockId)
+                    IdList.append([stockId, name])
                 else:
                     X_test.append(x)
                     #Y_test.append(price_list[i+1]['percent']/10.0)
@@ -404,15 +404,19 @@ class Stock(object):
         print 'time: ', time.time()-start_time
         return X, Y, X_test, Y_test, X_latest, IdList
 
-    def predict_result(self, model, X, Y=None, stockIdList=None):
+    def predict_result(self, model, X, Y=None, stockIdList=None, myList=None):
         pp, pn, np, nn = 0, 0, 0, 0
-        scoreList = []
+        scoreList, selectList = [], []
         for i in range(len(X)):
             score = model.predict(X[i])
+            score[0] = round(score[0], 3)
             scoreList.append(score[0])
-            if score[0] > 0.8 and stockIdList: print stockIdList[i]
+            if stockIdList and myList and stockIdList[i][0] in myList:
+                print '$'+stockIdList[i][1]+'('+stockIdList[i][0]+')'+'$', 'score: ', score[0]
+            if score[0] >= 0.5 and stockIdList:
+                selectList.append([stockIdList[i], score[0]]) #print stockIdList[i]
 
-            if Y and Y[i] >= 0.2:
+            if Y and Y[i] > 0.0:
                 if score[0] >= 0.5: pp += 1
                 else: pn += 1
             else:
@@ -424,12 +428,15 @@ class Stock(object):
         else:
             print np, nn, 'predict p: ', 1.0*np/(np+nn)
 
-        print min(scoreList), max(scoreList)
+        selectList = sorted(selectList, key=lambda x: x[1], reverse=True)
+        for i in range(min(len(selectList), 20)):
+            #print selectList[i][0], selectList[i][1]
+            print '$'+selectList[i][0][1]+'('+selectList[i][0][0]+')'+'$', selectList[i][1]
+
+        print 'min score: ', min(scoreList), 'max score: ', max(scoreList)
         bin = numpy.arange(-2, 2, 0.1)
         pyplot.hist(scoreList, bin)
         pyplot.show()
-
-        return scoreList
 
 
 
@@ -437,7 +444,7 @@ class Stock(object):
         start_time = time.time()
         x_train, y_train, x_test, y_test = [], [], [], []
         for i in range(len(X)):
-            if random.random() < 0.8:
+            if random.random() < 0.7:
                 x_train.append(X[i])
                 y_train.append(Y[i])
             else:
@@ -452,8 +459,9 @@ class Stock(object):
         self.predict_result(model, x_test, y_test)
         print 'test result:'
         self.predict_result(model, X_test, Y_test)
+        myList = {'SZ300025', 'SZ000681', 'SZ002637', 'SH600285', 'SZ000687', 'SH600677', 'SH600397', 'SZ000698'}
         print 'latest result:'
-        self.predict_result(model, X_latest, Y=None, stockIdList=stockIdList)
+        self.predict_result(model, X_latest, Y=None, stockIdList=stockIdList, myList=myList)
 
         fi = GBR.feature_importances_
         fi = [round(v,4) for v in fi]
@@ -474,10 +482,10 @@ if __name__ == '__main__':
     #stock.init(sys.argv[1])
     stock.init('127.0.0.1:6379')
 
-    if False:
-        stock.summary_stock_pankou_info()
+    if len(sys.argv) < 2:
+        pass
 
-    elif len(sys.argv) < 2 or sys.argv[1] == 'model':
+    elif sys.argv[1] == 'model':
         X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(None,default_day=10,test_day=4)
         print len(X), len(Y), len(X_test), len(Y_test), len(X_latest), len(IdList)
         #print X[-1], Y[-1]
@@ -492,6 +500,9 @@ if __name__ == '__main__':
     elif sys.argv[1] == 'stock_pankou':
         stock.crawl_stock_pankou_info()
 
+    elif sys.argv[1] == 'stock_pankou_summary':
+        stock.summary_stock_pankou_info()
+
     elif sys.argv[1] == 'hy_url':
         stock.crawl_hy_url_list()
 
@@ -501,3 +512,5 @@ if __name__ == '__main__':
     elif sys.argv[1] == 'draw_forchartk':
         stockIdList = ['SH'+str(key) for key in range(600000, 604000)]
         stock.draw_forchartk([stockIdList])
+
+
