@@ -33,7 +33,7 @@ USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/537.36
 # See http://scrapy.readthedocs.org/en/latest/topics/settings.html#download-delay
 # See also autothrottle settings and docs
 #DOWNLOAD_DELAY=3
-DOWNLOAD_DELAY = 0.5
+DOWNLOAD_DELAY = 0.4
 DOWNLOAD_TIMEOUT = 3
 # The download delay setting will honor only one of:
 #CONCURRENT_REQUESTS_PER_DOMAIN=16
@@ -66,7 +66,13 @@ COOKIES_ENABLED=True
 # See http://scrapy.readthedocs.org/en/latest/topics/downloader-middleware.html
 #DOWNLOADER_MIDDLEWARES = {
 #    'scrapySpider.middlewares.MyCustomDownloaderMiddleware': 543,
+#    'scrapy_crawlera.CrawleraMiddleware': 600
 #}
+
+#CRAWLERA_ENABLED = True
+#CRAWLERA_USER = '3b464d27244643899b3de5bfebbc03ec'
+# 1533ab8deec34348961954468fbf39dc
+#CRAWLERA_PASS = ''
 
 # Enable or disable extensions
 # See http://scrapy.readthedocs.org/en/latest/topics/extensions.html

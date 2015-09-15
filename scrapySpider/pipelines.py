@@ -58,7 +58,7 @@ class ScrapyspiderPipeline(object):
                 _data['0day'] = [data['chartlist']]
             elif _data['0day'][-1][0]['time'] != data['chartlist'][0]['time']:
                 _data['0day'].append(data['chartlist'])
-                if len(_data['0day']) > 7:
+                if len(_data['0day']) > 15:
                     _data['0day'] = _data['0day'][1:]
             else:
                 _data['0day'][-1] = data['chartlist']
@@ -118,6 +118,7 @@ class ScrapyspiderPipeline(object):
         _data['totalShares'] = float(data[stockId]['totalShares'])
         _data['float_shares'] = float(data[stockId]['float_shares'])
         _data['flag'] = data[stockId]['flag']  # "2"：停牌  “1”：正常  "0"：退市  “3”: 新股
+        _data['datetime'] = datetime.date.today().ctime()
 
         # 每股收益 每股净资产 每股股息 市盈率 市净率 市销率
         for key in ['current','volumeAverage','eps','net_assets', 'dividend','pe_ttm','pe_lyr','pb','psr']:
