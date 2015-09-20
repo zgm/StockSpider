@@ -29,13 +29,14 @@ MONGODB_URI = 'mongodb://127.0.0.1:27017/'
 class Stock(object):
 
     def init(self, redis_server):
-
         self.mongo_client = MongoClient(MONGODB_URI)
         self.db = self.mongo_client['stock']
         self.col = self.db['table'] # 股票信息
         self.hy = self.db['hy'] # 股票行业信息
 
         self.init_scrapy_redis(redis_server)
+
+        self.cache = {} # 存储部分股票数据
 
 
     def init_scrapy_redis(self, redis_server):
@@ -45,40 +46,43 @@ class Stock(object):
         self.redis_client = redis.StrictRedis(host=host, port=int(port))
         print self.redis_client
 
-        return True
 
-
-    def update_redis_info(self, src):
+    def push_redis_url(self, url):
         key = self.redis_key_prefix + 'start_urls'
-        self.redis_client.lpush(key, src)
-
-        return True
+        self.redis_client.lpush(key, url)
 
 
     # "Mon Aug 17 09:30:00 +0800 2015"
-    def get_time(self, cur_time='09:30:00'):
+    def get_time(self, Time='09:30:00'):
         Weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] # 0 1 2 3 4
         Month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] # 0 ... 11
 
-        today = datetime.date.today()
-        day, weekday, month, year = today.day, today.weekday(), today.month, today.year
+        today, delta = datetime.date.today(), datetime.timedelta(1)
         # 周末变周五
-        if weekday > 4:
-            day = day + 4 - weekday
-            weekday = 4
+        while today.weekday() > 4:
+            today = today - delta
+        day, weekday, month, year = today.day, today.weekday(), today.month, today.year
         if day < 10: day = '0' + str(day)
 
-        return Weekday[weekday] + ' ' + Month[month-1] + ' ' + str(day) + ' ' + cur_time + ' +0800 ' + str(year)
-    # "Mon Aug 17 09:30:00 +0800 2015"
-    def get_datetime(self, time):
+        return Weekday[weekday] + ' ' + Month[month-1] + ' ' + str(day) + ' ' + Time + ' +0800 ' + str(year)
+
+    def get_datetime(self, Time='Mon Aug 17 09:30:00 +0800 2015'):
         Weekday = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        year, month, day = int(time[-4:]), time[4:7], int(time[8:10])
+        year, month, day = int(Time[-4:]), Time[4:7], int(Time[8:10])
         for i in range(len(Weekday)):
             if month == Weekday[i]:
                 month = i + 1
                 break
 
         return datetime.date(year, month, day)
+
+    def get_stockId_all(self):
+        stockIdList = self.col.find({}, {'stockId':1})
+        stockIdList = [Info['stockId'] for Info in stockIdList \
+                       if Info['stockId'] not in ['SH000001', 'SZ399001', 'SZ399005', 'SZ399006']]
+
+        return stockIdList
+
 
 
     # 抓取行业的股指股票信息
@@ -154,15 +158,13 @@ class Stock(object):
 
         for hy in HY:
             hy = hy[6:-1]
-            #print hy
-            #continue
             _data = self.hy.find_one({'name':hy})
             #if not _data: continue
 
             url = "http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/1/1/" + hy
-            self.update_redis_info(url)
+            self.push_redis_url(url)
             url = "http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/2/1/" + hy
-            self.update_redis_info(url)
+            self.push_redis_url(url)
 
 
     # http://stockpage.10jqka.com.cn/spService/000687/Funds/realFunds 行业资金流向
@@ -174,7 +176,7 @@ class Stock(object):
             stockId = stockInfo['stockId']
 
             url = 'http://stockpage.10jqka.com.cn/spService/' + stockId[2:] + '/Header/realHeader'
-            self.update_redis_info(url)
+            self.push_redis_url(url)
 
 
     # 股票逐笔成交信息，例子
@@ -196,8 +198,8 @@ class Stock(object):
             stockId = stockInfo['stockId']
 
             url = 'http://xueqiu.com/stock/pankou.json?symbol=' + stockId
-            self.update_redis_info(url)
-        self.update_redis_info('http://xueqiu.com')
+            self.push_redis_url(url)
+        self.push_redis_url('http://xueqiu.com')
 
     def summary_stock_pankou_info(self, default_x=5):
         stockIdList = self.col.find({}, {'stockId':1, 'pankou':1, 'flag':1})
@@ -220,18 +222,22 @@ class Stock(object):
             stockId = stockInfo['stockId']
 
             url = 'http://xueqiu.com/v4/stock/quote.json?code=' + stockId
-            self.update_redis_info(url)
-        self.update_redis_info('http://xueqiu.com')
+            self.push_redis_url(url)
+        self.push_redis_url('http://xueqiu.com')
 
-    def summary_stock_price_info(self, K=5, default_x=5):
-        stockIdList = self.col.find({}, {'stockId':1, '0day':1, 'flag':1, 'current':1})
-        ratio = []
-        sum = 0
-        for stockInfo in stockIdList:
-            if stockInfo.get('flag') != '1' or not stockInfo.get('0day') or stockInfo.get('current')==0: continue
-            price_list = stockInfo['0day'][-1]
+    # K分钟资金流入流出委比
+    def summary_stock_price_info(self, K=1, default_x=5, stockIdList=None):
+        start_time = time.time()
+        if not stockIdList:
+            stockIdList = self.get_stockId_all()
+
+        ratio, sum = [], 0
+        for stockId in stockIdList:
+            Info = self.col.find_one({'stockId': stockId}, {'0day':1, 'flag':1, 'current':1})
+            if Info.get('flag') != '1' or not Info.get('0day') or Info.get('current')==0: continue
+            price_list = Info['0day'][-1]
             n = len(price_list)
-            if n < 100: continue
+            if n < 50: continue
 
             current, Out, In = None, 0.0, 0.0
             for i in range(0,n,K):
@@ -249,7 +255,8 @@ class Stock(object):
                 sum += 1
                 continue
             ratio.append(100*(In-Out)/(In+Out))
-        print len(ratio), sum
+        print time.time()-start_time
+        print 'stock number: ', len(ratio), 'bad case: ', sum
         bin = numpy.arange(-100, 101, default_x)
         pyplot.hist(ratio, bin)
         pyplot.show()
@@ -265,7 +272,7 @@ class Stock(object):
         stockid.extend([i for i in range(300000,300489)])
         stockid.extend([i for i in range(600000,602000)])
         stockid.extend([i for i in range(603000,604000)])
-        stockid.extend(['SH000001', 'SZ399006'])
+        stockid.extend(['SH000001', 'SZ399001', 'SZ399005', 'SZ399006']) # 沪 深 中小板 创业板
 
         #stockid = [681, 5]
         for id in stockid:
@@ -282,28 +289,28 @@ class Stock(object):
 
 
             end = int(time.time()*1000)
-            begin = end - 90*24*3600*1000
+            begin = end - 100*24*3600*1000
+            if not isInt: begin -= 20*24*3600*1000  # 板块数据 多抓些
 
-            if _data.get('flag') != "1": continue # 停牌
+            if 'flag' in _data and _data.get('flag') != "1": continue # 停牌
 
             #http://d.10jqka.com.cn/v2/line/hs_300025/01/last.js
             if not _data.get('0day') or _data['0day'][-1][-1]['time'] != self.get_time(flag['0day']):
                 url = 'http://xueqiu.com/stock/forchart/stocklist.json?symbol=' + id + '&period=1d&one_min=1'
-                self.update_redis_info(url)
-            if flag.get('1day') and (not _data.get('1day') or _data['1day'][-1]['time'] != self.get_time('00:00:00')):
+                self.push_redis_url(url)
+            if not isInt:
+            #if flag.get('1day') and (not _data.get('1day') or _data['1day'][-1]['time'] != self.get_time('00:00:00')):
+                print id
                 url = 'http://xueqiu.com/stock/forchartk/stocklist.json?symbol=' + id + '&period=1day&type=before&begin=' + str(begin) + '&end=' + str(end)
-                self.update_redis_info(url)
+                self.push_redis_url(url)
 
-        #self.update_redis_info('http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681\
+        #self.push_redis_url('http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681\
         # &period=1d&one_min=1')
-        #self.update_redis_info('http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681\
+        #self.push_redis_url('http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681\
         # &period=1day&type=before&begin=1407602252104&end=1439138252104')
 	
-        self.update_redis_info('http://xueqiu.com')
+        self.push_redis_url('http://xueqiu.com')
 
-
-    def generate_stockIdList(self, stockId):
-        return []
 
     # 获取股票列表的k线图数据
     def get_forchartk(self, stockIdList, type='totalShares'):
@@ -374,30 +381,61 @@ class Stock(object):
         pyplot.legend()
         pyplot.show()
 
+    # data = [[volume, price], [volume, price]]
     def get_decay_feature(self, data, decay=0):
         Decay = {0:1.0, 1:0.5, 2:math.pow(0.5,1/2.0), 4:math.pow(0.5,1/4.0)}
 
-        W, V, d = 0.0, 0.0, Decay[decay]
+        weight, value, d = 0.0, 0.0, Decay[decay]
         for w, v in data[::-1]:
-            W += w*d
-            V += w*d*v
+            weight += w*d
+            value += w*d*v
             d *= Decay[decay]
-        return V/W
+        return value/weight
+
+    def get_flag_feature(self, stockId):
+        #['SH000001', 'SZ399001', 'SZ399005', 'SZ399006'] # 沪 深 中小板 创业板
+        if stockId.startswith('SH6'):
+            return 0
+        elif stockId.startswith('SZ000') or stockId.startswith('SZ001'):
+            return 1
+        elif stockId.startswith('SZ002'):
+            return 5
+        elif stockId.startswith('SZ300'):
+            return 6
+        else:
+            print 'error: ', stockId
+
+    # 获取板块数据两天之间的差值   Day: "Thu Sep 17 00:00:00 +0800 2015"
+    def get_delta_feature(self, stockId, Yesterday, Today):
+        if stockId not in self.cache:
+            Info = self.col.find_one({'stockId': stockId})
+            self.cache[stockId] = {}
+            for price in Info['1day']:
+                self.cache[stockId][price['time']] = price['close']
+        if Yesterday not in self.cache[stockId] or Today not in self.cache[stockId]:
+            print 'error: ', Yesterday, Today, stockId
+            return 0.0
+        y_price, t_price = self.cache[stockId][Yesterday], self.cache[stockId][Today]
+        return 100.0*t_price/y_price-100.0
+
+    def get_target(self, value):
+        if value >= 1.0: return 1.0
+        elif value <= 1.0: return -1.0
+        else: return 0.0
 
     # 取stockIdList中股票数据
-    def generate_training_data(self, stockIdList=None, default_day=10, test_day=[4,0,2]):
+    def generate_training_data(self, default_day=10, test_day=[4,0,2]):
         start_time = time.time()
-        if stockIdList is None:
-            stockIdList = self.col.find({}, {'stockId':1, 'name':1})
-            stockIdList = [[Info['stockId'],Info['name']] for Info in stockIdList]
+        stockIdList = self.get_stockId_all()
         print 'time: ', time.time()-start_time
 
         X, Y, X_test, Y_test, X_latest, IdList = [], [], [], [], [], []
-        for stockId, name in stockIdList:
-            info = self.col.find_one({'stockId':stockId},{'0day':0, 'pankou':0})
-            if info.get('flag')!="1" or info.get('current')==0: continue # 停牌
-            if 'name' in info and info['name'].find('ST') >= 0: continue # ST股票
-            price_list = info['1day']
+        X_test, Y_test = [[] for i in range(test_day[0])], [[] for i in range(test_day[0])]
+        for stockId in stockIdList:
+            Info = self.col.find_one({'stockId':stockId}, {'0day':0, 'pankou':0})
+            if Info.get('flag')!="1" or Info.get('current')==0: continue # 停牌
+            if 'name' in Info and Info['name'].find('ST') >= 0: continue # ST股票
+            price_list, name = Info['1day'], Info['name']
 
             list_len = len(price_list)
             volume = [1.0*price['volume'] for price in price_list]
@@ -405,10 +443,8 @@ class Stock(object):
             if sum(volume) == 0 or sum(turnrate) == 0: continue
 
             avg_volume, avg_turnrate = sum(volume)/list_len/1e8, sum(turnrate)/list_len
-            Total, Float, Avg = info['totalShares']/1e8, info['float_shares']/1e8, info['volumeAverage']/1e8
+            Total, Float, Avg = Info['totalShares']/1e8, Info['float_shares']/1e8, Info['volumeAverage']/1e8
             for i in range(default_day, list_len): # 第一个数据只使用close价格
-                #avg_price = sum([price['close'] for price in price_list[i-default_day+1:i+1]])/default_day
-
                 x, decay_x = [], []
                 for j in range(i-default_day+1, i+1):
                     #avg_price = sum([price_list[j][key] for key in ['open', 'close', 'high', 'low']]) / 4.0
@@ -426,6 +462,9 @@ class Stock(object):
                     x.append(100.0*self.get_decay_feature(decay_x[-3:], decay=0)/price_list[j]['close']-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-5:], decay=0)/price_list[j]['close']-100.0)
 
+                    #for id in ['SH000001', 'SZ399001', 'SZ399005', 'SZ399006']: # 沪 深 中小板 创业板
+                    #    x.append(self.get_delta_feature(id, price_list[j-1]['time'], price_list[j]['time']))
+
                 close = price_list[i]['close']
                 for decay in [0, 1, 2, 4]:
                     x.append(100.0*self.get_decay_feature(decay_x, decay=decay)/close-100.0)
@@ -433,12 +472,15 @@ class Stock(object):
                     #    x.append(self.generate_decay_feature(decay_x[j:], decay=decay)/close)
                     #x.extend([0.0, 0.0])
                 x.extend([Total, Float, Avg, Total*close, Float*close, Avg*close, avg_volume*close])
-                x.extend([info[key]/close for key in ['eps','net_assets', 'dividend']])
-                x.extend([info[key]*close/info['current'] for key in ['pe_ttm','pe_lyr','pb','psr']])
+                x.extend([Info[key]/close for key in ['eps','net_assets', 'dividend']])
+                x.extend([Info[key]*close/Info['current'] for key in ['pe_ttm','pe_lyr','pb','psr']])
+                x.append(self.get_flag_feature(stockId))
+                #for id in ['SH000001', 'SZ399001', 'SZ399005', 'SZ399006']: # 沪 深 中小板 创业板
+                #    x.append(self.get_delta_feature(id, price_list[i-1]['time'], price_list[i]['time']))
                 if i < list_len-test_day[0]:
                     X.append(x)
                     #Y.append(price_list[i+1]['percent']/10.0)
-                    Y.append(price_list[i+1]['percent'] > 1.5 and 1. or -1.)
+                    Y.append(self.get_target(price_list[i+1]['percent']))
                     #if price_list[i+1]['percent'] > 6.0: # 重复 提高权重
                     #    X.append(x)
                     #    Y.append(1.0)
@@ -446,9 +488,10 @@ class Stock(object):
                     X_latest.append(x)
                     IdList.append([stockId, name])
                 elif list_len-test_day[0]+test_day[1] <= i and i <= list_len-test_day[0]+test_day[2]:
-                    X_test.append(x)
+                    index = i-list_len+test_day[0]
+                    X_test[index].append(x)
                     #Y_test.append(price_list[i+1]['percent']/10.0)
-                    Y_test.append(price_list[i+1]['percent'] > 1.5 and 1. or -1.)
+                    Y_test[index].append(self.get_target(price_list[i+1]['percent']))
         print len(Y), sum(Y)
         print 'time: ', time.time()-start_time
         return X, Y, X_test, Y_test, X_latest, IdList
@@ -469,11 +512,10 @@ class Stock(object):
                 x.extend([0.0, 0.0])
         return x
 
-    def generate_training_data_0day(self, stockIdList=None, default_day=2, test_day=[2,0,0]):
+    def generate_training_data_0day(self, default_day=2, test_day=[2,0,0]):
         start_time = time.time()
-        if stockIdList is None:
-            stockIdList = self.col.find({}, {'stockId':1, 'name':1})
-            stockIdList = [[Info['stockId'],Info['name']] for Info in stockIdList]
+        stockIdList = self.col.find({}, {'stockId':1, 'name':1})
+        stockIdList = [[Info['stockId'],Info['name']] for Info in stockIdList]
         print 'time: ', time.time()-start_time
 
         X, Y, X_test, Y_test, X_latest, IdList = [], [], [], [], [], []
@@ -529,8 +571,8 @@ class Stock(object):
 
 
     def predict_result(self, model, X, Y=None, stockIdList=None, myList=None):
-        scoreList, selectList = [], []
-        for i in range(len(X)):
+        scoreList, selectList, N = [], [], len(X)
+        for i in range(N):
             score = model.predict(X[i])
             score[0] = round(score[0], 3)
             scoreList.append(score[0])
@@ -539,11 +581,11 @@ class Stock(object):
             if score[0] >= 0.5 and stockIdList:
                 selectList.append([stockIdList[i], score[0]]) #print stockIdList[i]
 
-        for threshold in range(9):
+        for threshold in range(8):
             threshold /= 10.0
 
             pp, pn, np, nn = 0, 0, 0, 0
-            for i in range(len(X)):
+            for i in range(N):
 
                 if Y and Y[i] > 0.0:
                     if scoreList[i] >= threshold: pp += 1
@@ -554,8 +596,8 @@ class Stock(object):
             if Y:
                 print threshold, pp, pn, np, nn,
                 if pp+np and pp+pn and pp+np:
-                    print 'P/R:', round(1.*pp/(pp+np),3), round(1.*pp/(pp+pn),3), 'C:', round(1.*(pp+np)/len(X),3),
-                    print round(1.*(pp+pn)/len(X),3), 'F:', round(2.*pp/(2.*pp+pn+np),3), 'P:', round(1.*(pp+nn)/len(X),3)
+                    print 'P/R:', round(100.*pp/(pp+np),1), round(100.*pp/(pp+pn),1), 'C:', round(100.*(pp+np)/N,1),
+                    print round(100.*(pp+pn)/N,1), 'F:', round(200.*pp/(2.*pp+pn+np),1), 'P:', round(100.*(pp+nn)/N,1)
                 else: print ''
                 #print 'mean error: ', mean_squared_error(Y, model.predict(X))
             elif threshold==0.0:
@@ -576,34 +618,40 @@ class Stock(object):
         start_time = time.time()
         x_train, y_train, x_test, y_test = [], [], [], []
         for i in range(len(X)):
-            if random.random() < 0.7:
+            if random.random() < 0.8:
                 x_train.append(X[i])
                 y_train.append(Y[i])
             else:
                 x_test.append(X[i])
                 y_test.append(Y[i])
         GBR = GradientBoostingRegressor(n_estimators=100,learning_rate=0.5,min_samples_leaf=100,\
-                                          max_leaf_nodes=5,random_state=0,loss='ls')
+                                          max_leaf_nodes=10,random_state=0,loss='ls')
         #GBR = GradientBoostingClassifier(n_estimators=100,learning_rate=0.5,min_samples_leaf=100,\
         #                                  max_leaf_nodes=5,random_state=0,loss='deviance')
         model = GBR.fit(x_train,y_train)
         print 'time: ', time.time()-start_time
 
-        print 'old data result: (total:', len(X), ',test:', len(x_test), ')'
+        print 'training result:'
+        self.predict_result(model, x_train, y_train)
+        print 'training test result: (total:', len(X), ',test:', len(x_test), ')'
         self.predict_result(model, x_test, y_test)
         print 'test result:'
-        self.predict_result(model, X_test, Y_test)
+        for i in range(len(X_test)):
+            if len(X_test[i]) == 0: continue
+            print len(X_test[i]), len(Y_test[i])
+            self.predict_result(model, X_test[i], Y_test[i])
         myList = {'SZ300025', 'SZ000681', 'SZ002637', 'SH600285', 'SZ000687', 'SH600677', 'SH600397', 'SZ000698'\
-                  ,'SZ300104'
+                  ,'SZ300104', 'SH600886'
         }
         print 'latest result:'
         self.predict_result(model, X_latest, Y=None, stockIdList=stockIdList, myList=myList)
 
         fi = GBR.feature_importances_
         fi = [round(100*v,2) for v in fi]
-        for i in range(0,len(fi),14):
-            for v in fi[i:i+14]: print '{0:4}'.format(v),
-            print ''
+        for i in range(len(fi)):
+            if i%14 == 0: print ''
+            print '{0:4}'.format(fi[i]),
+        print ''
 
 
 
@@ -611,54 +659,51 @@ class Stock(object):
 
 if __name__ == '__main__':
 
-    #if len(sys.argv) != 2:
-    #    print 'Usage: {0} conf_file'.format(__file__)
-    #    sys.exit(1)
-
     stock = Stock()
     #stock.init(sys.argv[1])
     stock.init('127.0.0.1:6379')
 
     if len(sys.argv) < 2:
+        print stock.get_time('00:00:00')
 
-        stock.update_redis_info('http://www.qq.com')
+        #stock.push_redis_url('http://www.qq.com')
         pass
 
     elif sys.argv[1] == 'model':
-        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(None,default_day=10,test_day=[4,2,2])
-        #X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data_0day(None,default_day=2,test_day=[2,0,0])
+        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(default_day=10,test_day=[8,0,6])
+        #X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data_0day(default_day=2,test_day=[2,0,0])
         print len(X), len(Y), len(X_test), len(Y_test), len(X_latest), len(IdList)
         #print X[-1], Y[-1]
         scoreList = stock.training_model(X, Y, X_test, Y_test, X_latest, IdList)
 
-    elif sys.argv[1] == 'stock_price':
+    elif sys.argv[1] == 'price':
         stock.crawl_stock_price_info()
 
-    elif sys.argv[1] == 'stock_price_0day':
+    elif sys.argv[1] == 'price_0day':
         stock.crawl_stock_price_info(flag={'0day':'11:30:00'})
 
-    elif sys.argv[1] == 'stock_price_0day_summary':
+    elif sys.argv[1] == 'price_0day_summary':
         stock.summary_stock_price_info(K=1, default_x=5)
         stock.summary_stock_price_info(K=5, default_x=5)
         stock.summary_stock_price_info(K=10, default_x=5)
         #stock.summary_stock_price_info(K=15, default_x=5)
 
-    elif sys.argv[1] == 'stock_basic':
+    elif sys.argv[1] == 'basic':
         stock.crawl_stock_basic_info()
 
-    elif sys.argv[1] == 'stock_pankou':
+    elif sys.argv[1] == 'pankou':
         stock.crawl_stock_pankou_info()
 
-    elif sys.argv[1] == 'stock_pankou_summary':
+    elif sys.argv[1] == 'pankou_summary':
         stock.summary_stock_pankou_info()
+
+    elif sys.argv[1] == 'hy':
+        stock.crawl_stock_hy_info()
 
     elif sys.argv[1] == 'hy_url':
         stock.crawl_hy_url_list()
 
-    elif sys.argv[1] == 'stock_hy':
-        stock.crawl_stock_hy_info()
-
-    elif sys.argv[1] == 'draw_forchartk':
+    elif sys.argv[1] == 'drawK':
         stockIdList = ['SH'+str(key) for key in range(600000, 604000)]
         stock.draw_forchartk([stockIdList])
 
