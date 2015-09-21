@@ -298,9 +298,7 @@ class Stock(object):
             if not _data.get('0day') or _data['0day'][-1][-1]['time'] != self.get_time(flag['0day']):
                 url = 'http://xueqiu.com/stock/forchart/stocklist.json?symbol=' + id + '&period=1d&one_min=1'
                 self.push_redis_url(url)
-            if not isInt:
-            #if flag.get('1day') and (not _data.get('1day') or _data['1day'][-1]['time'] != self.get_time('00:00:00')):
-                print id
+            if flag.get('1day') and (not _data.get('1day') or _data['1day'][-1]['time'] != self.get_time('00:00:00')):
                 url = 'http://xueqiu.com/stock/forchartk/stocklist.json?symbol=' + id + '&period=1day&type=before&begin=' + str(begin) + '&end=' + str(end)
                 self.push_redis_url(url)
 
@@ -390,18 +388,27 @@ class Stock(object):
             weight += w*d
             value += w*d*v
             d *= Decay[decay]
+
         return value/weight
+
+    def get_turnrate_info(self, turnrate, threshold=0.8):
+        s = sorted(turnrate)
+        Min, Max, N = s[0], s[-1], len(turnrate)
+        for i in range(N):
+            if N-i >= N*threshold: Min = s[i]
+            if i+1 < N*threshold: Max = s[i]
+        return Min, Max
 
     def get_flag_feature(self, stockId):
         #['SH000001', 'SZ399001', 'SZ399005', 'SZ399006'] # 沪 深 中小板 创业板
         if stockId.startswith('SH6'):
-            return 0
+            return 0.0
         elif stockId.startswith('SZ000') or stockId.startswith('SZ001'):
-            return 1
+            return 1.0
         elif stockId.startswith('SZ002'):
-            return 5
+            return 5.0
         elif stockId.startswith('SZ300'):
-            return 6
+            return 6.0
         else:
             print 'error: ', stockId
 
@@ -416,6 +423,7 @@ class Stock(object):
             print 'error: ', Yesterday, Today, stockId
             return 0.0
         y_price, t_price = self.cache[stockId][Yesterday], self.cache[stockId][Today]
+
         return 100.0*t_price/y_price-100.0
 
     def get_target(self, value):
@@ -440,9 +448,10 @@ class Stock(object):
             list_len = len(price_list)
             volume = [1.0*price['volume'] for price in price_list]
             turnrate = [price['turnrate'] for price in price_list]
-            if sum(volume) == 0 or sum(turnrate) == 0: continue
+            if list_len < default_day or sum(volume) == 0 or sum(turnrate) == 0: continue
 
             avg_volume, avg_turnrate = sum(volume)/list_len/1e8, sum(turnrate)/list_len
+            min_turnrate, max_turnrate = self.get_turnrate_info(turnrate)
             Total, Float, Avg = Info['totalShares']/1e8, Info['float_shares']/1e8, Info['volumeAverage']/1e8
             for i in range(default_day, list_len): # 第一个数据只使用close价格
                 x, decay_x = [], []
@@ -451,11 +460,15 @@ class Stock(object):
                     avg_price = price_list[j]['close']
                     decay_x.append([max(price_list[j]['turnrate'],0.0001), avg_price])
 
+                    close = price_list[j-1]['close']
                     for key in ['open', 'close', 'high', 'low']:
-                        x.append( 100.0*price_list[j][key]/price_list[j-1]['close']-100.0 )
+                        x.append( 100.0*price_list[j][key]/close-100.0 )
+                    for key in ['open', 'high', 'low']:
+                        x.append( 100.0*(price_list[j][key]-price_list[j]['close'])/close )
                     for key in ['ma5', 'ma10', 'ma20', 'ma30']:
                         x.append( 100.0*price_list[j][key]/price_list[j]['close']-100.0 )
-                    x.append(price_list[j]['turnrate']/avg_turnrate) # 归一化交易量
+                    x.append( price_list[j]['turnrate']/avg_turnrate ) # 归一化交易量
+                    x.append( (price_list[j]['turnrate']-min_turnrate)/(max_turnrate-min_turnrate)*10.0 )
                     #for key in ['percent', 'dif', 'dea', 'macd']:
                     for key in ['dif', 'dea', 'macd']:
                         x.append(price_list[j][key])
@@ -477,20 +490,16 @@ class Stock(object):
                 x.append(self.get_flag_feature(stockId))
                 #for id in ['SH000001', 'SZ399001', 'SZ399005', 'SZ399006']: # 沪 深 中小板 创业板
                 #    x.append(self.get_delta_feature(id, price_list[i-1]['time'], price_list[i]['time']))
+
                 if i < list_len-test_day[0]:
                     X.append(x)
-                    #Y.append(price_list[i+1]['percent']/10.0)
                     Y.append(self.get_target(price_list[i+1]['percent']))
-                    #if price_list[i+1]['percent'] > 6.0: # 重复 提高权重
-                    #    X.append(x)
-                    #    Y.append(1.0)
                 elif i == list_len-1:
                     X_latest.append(x)
                     IdList.append([stockId, name])
                 elif list_len-test_day[0]+test_day[1] <= i and i <= list_len-test_day[0]+test_day[2]:
                     index = i-list_len+test_day[0]
                     X_test[index].append(x)
-                    #Y_test.append(price_list[i+1]['percent']/10.0)
                     Y_test[index].append(self.get_target(price_list[i+1]['percent']))
         print len(Y), sum(Y)
         print 'time: ', time.time()-start_time
@@ -618,14 +627,14 @@ class Stock(object):
         start_time = time.time()
         x_train, y_train, x_test, y_test = [], [], [], []
         for i in range(len(X)):
-            if random.random() < 0.8:
+            if random.random() < 0.85:
                 x_train.append(X[i])
                 y_train.append(Y[i])
             else:
                 x_test.append(X[i])
                 y_test.append(Y[i])
         GBR = GradientBoostingRegressor(n_estimators=100,learning_rate=0.5,min_samples_leaf=100,\
-                                          max_leaf_nodes=10,random_state=0,loss='ls')
+                                          max_leaf_nodes=6,random_state=0,loss='ls')
         #GBR = GradientBoostingClassifier(n_estimators=100,learning_rate=0.5,min_samples_leaf=100,\
         #                                  max_leaf_nodes=5,random_state=0,loss='deviance')
         model = GBR.fit(x_train,y_train)
@@ -649,7 +658,7 @@ class Stock(object):
         fi = GBR.feature_importances_
         fi = [round(100*v,2) for v in fi]
         for i in range(len(fi)):
-            if i%14 == 0: print ''
+            if i%18 == 0: print ''
             print '{0:4}'.format(fi[i]),
         print ''
 
@@ -670,11 +679,11 @@ if __name__ == '__main__':
         pass
 
     elif sys.argv[1] == 'model':
-        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(default_day=10,test_day=[8,0,6])
+        X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data(default_day=10,test_day=[4,0,2])
         #X, Y, X_test, Y_test, X_latest, IdList = stock.generate_training_data_0day(default_day=2,test_day=[2,0,0])
         print len(X), len(Y), len(X_test), len(Y_test), len(X_latest), len(IdList)
         #print X[-1], Y[-1]
-        scoreList = stock.training_model(X, Y, X_test, Y_test, X_latest, IdList)
+        stock.training_model(X, Y, X_test, Y_test, X_latest, IdList)
 
     elif sys.argv[1] == 'price':
         stock.crawl_stock_price_info()
