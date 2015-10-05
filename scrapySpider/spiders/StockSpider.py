@@ -28,7 +28,7 @@ class StockSpider(RedisSpider):
                 if item['content'].get('data'):
                     yield item
 
-            elif item['src'].startswith("http://xueqiu.com/stock/forchart/stocklist.json?symbol=") or \
+            elif item['src'].startswith("http://xueqiu.com/stock/forchart/stocklist.json?symbol=") or\
                 item['src'].startswith("http://xueqiu.com/stock/forchartk/stocklist.json?symbol="): # 股票价格
                 if item['content'].get('success')=='true' and item['content'].get('chartlist'):
                     if item['content']['chartlist'][0].get('current') != 0: # 没有停牌
@@ -45,6 +45,10 @@ class StockSpider(RedisSpider):
 
             elif item['src'].startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业
                 if item['content'].get('fieldname') and item['content'].get('fieldjp'):
+                    yield item
+
+            elif item['src'].startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票分钟级数据
+                if item['content'] and item['content'][0].get('record'):
                     yield item
         except Exception as e:
             self.log('fail to parse content from response. url: {0}, err: {1}.'

@@ -6,6 +6,7 @@
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
 
 import datetime
+import json
 from pymongo import MongoClient
 from scrapySpider.items import stockItem
 
@@ -37,15 +38,10 @@ class ScrapyspiderPipeline(object):
 
         # get stock id
         index = url.find('symbol=')
-        if index >= 0:
-            stockId = url[index+7:index+15]
-        else:
-            print 'error to parse stock id'
-            return
+        stockId = url[index+7:index+15]
 
         _data = self.col.find_one({'stockId': stockId})
-        if not _data:
-            _data = {'stockId': stockId}
+        if not _data: _data = {'stockId': stockId}
 
         # get data field
         if url.find('period=1day') >= 0:
@@ -58,7 +54,7 @@ class ScrapyspiderPipeline(object):
                 _data['0day'] = [data['chartlist']]
             elif _data['0day'][-1][0]['time'] != data['chartlist'][0]['time']:
                 _data['0day'].append(data['chartlist'])
-                if len(_data['0day']) > 15:
+                if len(_data['0day']) > 20:
                     _data['0day'] = _data['0day'][1:]
             else:
                 _data['0day'][-1] = data['chartlist']
@@ -66,6 +62,39 @@ class ScrapyspiderPipeline(object):
             print 'error for this kind of url'
             return
         self.col.save(_data)
+
+    # http://api.finance.ifeng.com/aminhis/?code=sz002131&type=early
+    # http://api.finance.ifeng.com/aminhis/?code=sz002131&type=five
+    def save_stock_trade_info(self, url, data):
+        index = url.find('code=')
+        stockId = url[index+5:index+13].upper()
+
+        _data = self.col.find_one({'stockId': stockId})
+        if not _data: _data = {'stockId': stockId}
+
+        if not url.endswith('early') and not url.endswith('five'):
+            print 'error to save trade info: ', url, data
+            return
+        elif url.endswith('early'):
+            _data['minute_early_datetime'] = datetime.date.today().ctime()
+            _data['minute'] = {}
+        elif url.endswith('five'):
+            _data['minute_five_datetime'] = datetime.date.today().ctime()
+            if 'minute' not in _data: _data['minute'] = {}
+
+        for Info in data:
+            date = Info['record'][0][0][0:10]
+            value, index, N = [], 0, len(Info['record'])
+            for s in Info['record']:
+                s = [v.replace(',','') for v in s]
+                if index == 0 or index == N-1:
+                    value.append([s[0],float(s[1]),float(s[2]),float(s[3]),float(s[4])])
+                else:
+                    value.append([float(s[1]),float(s[2]),float(s[3]),float(s[4])])
+                index += 1
+            _data['minute'][date] = json.dumps(value)
+        self.col.save(_data)
+
 
     # 保存行业的所有股票信息，例子 url = http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/1/1/zq
     def save_hy_info(self, url, data):
@@ -156,6 +185,9 @@ class ScrapyspiderPipeline(object):
 
         elif url.startswith("http://xueqiu.com/stock/pankou.json?symbol="): # 股票盘口信息
             self.save_stock_pankou_info(url, data)
+
+        elif url.startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票分钟级数据
+            self.save_stock_trade_info(url, data)
 
         else: # 股票价格信息
             self.save_stock_price_info(url, data)
