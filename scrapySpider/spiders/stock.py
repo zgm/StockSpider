@@ -181,14 +181,6 @@ class Stock(object):
             self.push_redis_url(url)
 
 
-    # 股票逐笔成交信息，例子
-    # http://hqdigi2.eastmoney.com/EM_Quote2010NumericApplication/CompatiblePage.aspx?Type=OB&stk=6006631&page=5
-    # http://hqdigi2.eastmoney.com/EM_Quote2010NumericApplication/CompatiblePage.aspx?Type=OB&stk=0006812&page=2
-    # end前5分钟  http://quotes.money.163.com/service/zhubi_ajax.html?symbol=002637&end=13%3A37%3A00
-    def crawl_stock_trade_info(self):
-        pass
-
-
     # http://xueqiu.com/stock/pankou.json?symbol=SZ000681
     # http://stockpage.10jqka.com.cn/spService/300025/Header/realHeader
     def crawl_stock_pankou_info(self):
@@ -246,10 +238,8 @@ class Stock(object):
             for i in range(0,n,K):
                 volume, money = 0.0, 0.0
                 for j in range(i, min(n, i+K)):
-                    index = 0
-                    if isinstance(price[j][0], unicode): index += 1
-                    volume += price[j][index+2]
-                    money += price[j][index+2] * price[j][index]
+                    volume += price[j][-2]
+                    money += price[j][-2] * price[j][-4]
                 if volume == 0.0: continue
 
                 avg_price = money/volume
@@ -283,13 +273,11 @@ class Stock(object):
 
             High, Low = 0.0, 0.0
             for i in range(n):
-                index = 0
-                if isinstance(price[i][0], unicode): index += 1
-                delta = price[i][index] - price[i][index+3]
+                delta = price[i][-4] - price[i][-1]
                 if delta > 0.0:
-                    High += 100.0 * price[i][index+2] * delta
+                    High += 100.0 * price[i][-2] * delta
                 elif delta < 0.0:
-                    Low -= 100.0 * price[i][index+2] * delta
+                    Low -= 100.0 * price[i][-2] * delta
             if High + Low == 0:
                 sum += 1
                 continue
@@ -300,15 +288,6 @@ class Stock(object):
         pyplot.hist(ratio, bin)
         pyplot.show()
 
-
-    # http://data.gtimg.cn/flashdata/hushen/minute/sz300025.js
-    # http://data.gtimg.cn/flashdata/hushen/4day/sz/sz300025.js?
-    # http://data.gtimg.cn/flashdata/hushen/daily/15/sz300025.js
-
-    # http://finance.sina.com.cn/realstock/company/sz300025/nc.shtml
-    # http://finance.sina.com.cn/realstock/company/sz300024/hisdata/2015/09.js
-
-    #http://d.10jqka.com.cn/v2/line/hs_300025/01/last.js
 
     # http://finance.ifeng.com/app/hq/stock/sz300025/
     # http://api.finance.ifeng.com/aminhis/?code=sz300025&type=five
@@ -449,6 +428,20 @@ class Stock(object):
 
         return value/weight
 
+    def get_decay_feature_percent(self, close, priceInfo, decay=0.5):
+        volume = sum([priceInfo[p] for p in priceInfo])
+
+        price = sorted(priceInfo.iteritems(),key=lambda x:x[0]) # 按key排序，结果是列表 [(key,value), (key,value)]
+        x, p, N, v = [], -1, len(price), 0.0
+        for k in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+            while p < N-1 and v < k*volume:
+                p += 1
+                v += price[p][1]
+            x.append(100.0*price[p][0]/close-100.0)
+        #print close, x
+        if len(x)!=9: print price, x
+        return x
+
     def get_turnrate_info(self, turnrate, threshold=0.8):
         s = sorted(turnrate)
         Min, Max, N = s[0], s[-1], len(turnrate)
@@ -485,6 +478,7 @@ class Stock(object):
         return 100.0*t_price/y_price-100.0
 
     def get_target(self, value):
+        return round(value/5.0,2)
         if value >= 1.0: return 1.0
         elif value <= 1.0: return -1.0
         else: return 0.0
@@ -531,7 +525,6 @@ class Stock(object):
                     avg_price = price[j]['close']
                     decay_x.append([max(price[j]['turnrate'],0.0001), avg_price])
 
-                    x.append(100.0*avg_price/close-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-2:], decay=0)/price[j]['close']-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-3:], decay=0)/price[j]['close']-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-4:], decay=0)/price[j]['close']-100.0)
@@ -564,54 +557,60 @@ class Stock(object):
         print 'time: ', time.time()-start_time
         return X, Y, X_test, Y_test, X_latest, IdList
 
-    def generate_minute_feature(self, close, minute, K=4):
-        x, N, total_volume = [], len(minute), 0.0
 
-        cur_price, Out_volume, In_volume, Out, In = None, 0.0, 0.0, 0.0, 0.0
+    def generate_minute_feature(self, minute, K=4):
+        x, priceInfo = [], {}
+
+        N = len(minute)
+        total_volume = sum([minute[i][-2] for i in range(N)])
+        total_out_volume, total_in_volume, total_out, total_in = 0.0, 0.0, 0.0, 0.0
+
+        cur_price, percent, volume, Out_volume, In_volume, Out, In = None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        L, close = N/K, minute[-1][-4]/(1.0+0.01*minute[-1][-3])
         for i in range(N):
-            index = 0
-            if isinstance(minute[i][0], unicode): index += 1
+            price = minute[i][-4]
+            percent = minute[i][-3]
+            volume += minute[i][-2]
 
-            total_volume += minute[i][index+2]
-            price = minute[i][index]
+            if price in priceInfo: priceInfo[price] += volume
+            else: priceInfo[price] = volume
+
             if cur_price and cur_price > price:
-                Out_volume += minute[i][index+2]
-                Out += minute[i][index+2] * (cur_price-price)
+                Out_volume += minute[i][-2]
+                Out += minute[i][-2] * (cur_price-price)
             elif cur_price and cur_price < price:
-                In_volume += minute[i][index+2]
-                In += minute[i][index+2] * (price-cur_price)
+                In_volume += minute[i][-2]
+                In += minute[i][-2] * (price-cur_price)
             cur_price = price
-        x.extend([100*Out_volume/total_volume, 100*In_volume/total_volume])
-        if In+Out: x.append( 100*(In-Out)/(In+Out) )
-        elif cur_price > close: x.append( 100.0 )
-        else: x.append( -100.0 )
 
-        cur_price, Out_volume, In_volume, Out, In = None, 0.0, 0.0, 0.0, 0.0
-        L = N/K
-        for i in range(N):
-            index = 0
-            if isinstance(minute[i][0], unicode): index += 1
-
-            price = minute[i][index]
-            if cur_price and cur_price > price:
-                Out_volume += minute[i][index+2]
-                Out += minute[i][index+2] * (cur_price-price)
-            elif cur_price and cur_price < price:
-                In_volume += minute[i][index+2]
-                In += minute[i][index+2] * (price-cur_price)
-            cur_price = price
-            if (i!=0 and i%L==0 and i<=(K-1)*L) or i==N-1:
-                x.extend([100*Out_volume/total_volume, 100*In_volume/total_volume])
+            if (i!=0 and i%L==0 and i<K*L) or i==N-1:
+                x.extend([percent, 100.0*minute[i][-1]/close-100.0])
+                #x.extend([100*volume/total_volume, 100*Out_volume/total_volume, 100*In_volume/total_volume])
+                x.extend([100*volume/total_volume, 100*In_volume/total_volume])
                 if In+Out: x.append( 100*(In-Out)/(In+Out) )
-                elif cur_price > close: x.append( 100.0 )
-                else: x.append( -100.0 )
-                Out_volume, In_volume, Out, In = 0.0, 0.0, 0.0, 0.0
+                elif percent > 9.5: x.append( 100.0 )
+                elif percent < -9.5: x.append( -100.0 )
+                else: x.append( 0.0 )
 
-        return x
+                total_out_volume += Out_volume
+                total_in_volume += In_volume
+                total_out += Out
+                total_in += In
+                volume, Out_volume, In_volume, Out, In = 0.0, 0.0, 0.0, 0.0, 0.0
+        #x.extend([100*total_out_volume/total_volume, 100*total_in_volume/total_volume])
+        x.extend([100*total_in_volume/total_volume])
+        if total_in+total_out: x.append( 100*(total_in-total_out)/(total_in+total_out) )
+        elif percent > 9.5: x.append( 100.0 )
+        elif percent < -9.5: x.append( -100.0 )
+        else: x.append( 0.0 )
+
+        return x, priceInfo
+
 
     def generate_training_data(self, default_day=10, test_day=[4,0,2]):
         start_time = time.time()
         stockIdList = self.get_stockId_all()
+        #stockIdList = ['SZ300025']
         print 'time: ', time.time()-start_time
 
         X, Y, X_latest, IdList = [], [], [], []
@@ -623,8 +622,6 @@ class Stock(object):
 
             price, name = Info['1day'], Info['name']
             minute = {date:json.loads(Info['minute'][date]) for date in Info['minute']}
-            minute = {date:minute[date] for date in minute if minute[date]} # remove []
-            minute_feature = {}
 
             N = len(price)
             volume, turnrate = [1.0*p['volume'] for p in price], [p['turnrate'] for p in price]
@@ -634,12 +631,19 @@ class Stock(object):
             min_turnrate, max_turnrate = self.get_turnrate_info(turnrate)
             Total, Float, Avg = Info['totalShares']/1e8, Info['float_shares']/1e8, Info['volumeAverage']/1e8
 
-            valid = 0
+            minute_feature, valid = {}, 0
+            minute_price = {decay:{} for decay in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
             for i in range(1, N): # 第一个数据只使用close价格
                 date = str( self.get_datetime(price[i]['time']) )
-                if date in minute:
+                if minute.get(date):
                     valid += 1
-                    minute_feature[date] = self.generate_minute_feature(price[i-1]['close'], minute[date])
+                    minute_feature[date], priceInfo = self.generate_minute_feature(minute[date])
+                    for decay in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+                        for p in minute_price[decay]:
+                            minute_price[decay][p] *= decay
+                        for p in priceInfo:
+                            if p in minute_price[decay]: minute_price[decay][p] += priceInfo[p]
+                            else: minute_price[decay][p] = priceInfo[p]
                 elif valid:
                     valid = 0
                     #print stockId, price[i]['time'], date, [key for key in minute]
@@ -648,10 +652,11 @@ class Stock(object):
                 x, decay_x = [], []
                 for j in range(i-default_day+1, i+1):
                     close = price[j-1]['close']
-                    for key in ['open', 'close', 'high', 'low']:
-                        x.append( 100.0*price[j][key]/close-100.0 )
+                    #for key in ['open', 'close', 'high', 'low']:
                     for key in ['open', 'high', 'low']:
-                        x.append( 100.0*(price[j][key]-price[j]['close'])/close )
+                        x.append( 100.0*price[j][key]/close-100.0 )
+                    #for key in ['open', 'high', 'low']:
+                    #    x.append( 100.0*(price[j][key]-price[j]['close'])/close )
                     for key in ['ma5', 'ma10', 'ma20', 'ma30']:
                         x.append( 100.0*price[j][key]/price[j]['close']-100.0 )
 
@@ -666,7 +671,7 @@ class Stock(object):
                     #avg_price = price[j]['close']
                     decay_x.append([max(price[j]['turnrate'],0.0001), avg_price])
 
-                    x.append(100.0*avg_price/close-100.0)
+                    #x.append(100.0*avg_price/close-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-2:], decay=0)/price[j]['close']-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-3:], decay=0)/price[j]['close']-100.0)
                     x.append(100.0*self.get_decay_feature(decay_x[-4:], decay=0)/price[j]['close']-100.0)
@@ -675,8 +680,11 @@ class Stock(object):
                 self.line = len(x)/default_day
 
                 close = price[i]['close']
-                for decay in [0, 1, 2, 4]:
-                    x.append(100.0*self.get_decay_feature(decay_x, decay=decay)/close-100.0)
+                for decay in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+                    x.extend(self.get_decay_feature_percent(close, minute_price[decay]))
+
+                #for decay in [0, 1, 2, 4]:
+                #    x.append(100.0*self.get_decay_feature(decay_x, decay=decay)/close-100.0)
                 x = [round(value,2) for value in x] # 统一数字
 
                 x.extend([Total, Float, Avg, Total*close, Float*close, Avg*close, avg_volume*close])
@@ -701,7 +709,7 @@ class Stock(object):
         return X, Y, X_test, Y_test, X_latest, IdList
 
 
-    def predict_result(self, model, X, Y=None, stockIdList=None, myList=None, Threshold=8, Show=True):
+    def predict_result(self, model, X, Y=None, stockIdList=None, myList=None, Show=True):
         scoreList, selectList, N = [], [], len(X)
         for i in range(N):
             score = model.predict(X[i])
@@ -712,12 +720,10 @@ class Stock(object):
             if score[0] >= 0.5 and stockIdList:
                 selectList.append([stockIdList[i], score[0]]) #print stockIdList[i]
 
-        for threshold in range(Threshold):
-            threshold /= 10.0
-
-            pp, pn, np, nn = 0, 0, 0, 0
+        for threshold in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]:
+            pp, pn, np, nn, pY = 0, 0, 0, 0, []
             for i in range(N):
-
+                if Y and scoreList[i] >= threshold: pY.append(Y[i])
                 if Y and Y[i] > 0.0:
                     if scoreList[i] >= threshold: pp += 1
                     else: pn += 1
@@ -727,8 +733,8 @@ class Stock(object):
             if Y:
                 print threshold, pp, pn, np, nn,
                 if pp+np and pp+pn and pp+np:
-                    print 'P/R:', round(100.*pp/(pp+np),1), round(100.*pp/(pp+pn),1), 'C:', round(100.*(pp+np)/N,1),
-                    print round(100.*(pp+pn)/N,1), 'F:', round(200.*pp/(2.*pp+pn+np),1), 'P:', round(100.*(pp+nn)/N,1)
+                    print 'P/R:',round(100.*pp/(pp+np),1),round(100.*pp/(pp+pn),1), 'C:',round(100.*(pp+np)/N,1),
+                    print round(100.*(pp+pn)/N,1), 'P:', round(100.*(pp+nn)/N,1), 'pY:', round(sum(pY)/len(pY),3)
                 else: print ''
                 #print 'mean error: ', mean_squared_error(Y, model.predict(X))
             elif threshold==0.0:

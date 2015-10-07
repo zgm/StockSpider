@@ -47,7 +47,7 @@ class StockSpider(RedisSpider):
                 if item['content'].get('fieldname') and item['content'].get('fieldjp'):
                     yield item
 
-            elif item['src'].startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票分钟级数据
+            elif item['src'].startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票1分钟级数据
                 if item['content'] and item['content'][0].get('record'):
                     yield item
         except Exception as e:
