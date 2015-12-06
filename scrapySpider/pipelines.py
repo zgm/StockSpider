@@ -21,7 +21,7 @@ class ScrapyspiderPipeline(object):
         self.mongo_client = MongoClient(mongodb_uri)
         self.db = self.mongo_client['stock']
         self.col = self.db['table']
-        self.hy = self.db['hy']
+        self.gn = self.db['gn']
 
     @classmethod
     def from_settings(cls, settings):
@@ -65,7 +65,7 @@ class ScrapyspiderPipeline(object):
 
     # http://api.finance.ifeng.com/aminhis/?code=sz002131&type=early
     # http://api.finance.ifeng.com/aminhis/?code=sz002131&type=five
-    def save_stock_trade_info(self, url, data):
+    def save_stock_minute_info(self, url, data):
         index = url.find('code=')
         stockId = url[index+5:index+13].upper()
 
@@ -84,6 +84,7 @@ class ScrapyspiderPipeline(object):
 
         for Info in data:
             date = Info['record'][0][0][0:10]
+            if date == '2015-10-07': continue
             value, index, N = [], 0, len(Info['record'])
             for s in Info['record']:
                 s = [v.replace(',','') for v in s]
@@ -95,17 +96,16 @@ class ScrapyspiderPipeline(object):
             _data['minute'][date] = json.dumps(value)
         self.col.save(_data)
 
-
-    # 保存行业的所有股票信息，例子 url = http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/1/1/zq
-    def save_hy_info(self, url, data):
+    # 保存概念板块的所有股票信息，例子 URL = http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/5/3/xgycxg
+    def save_gn_info(self, url, data):
         # get mongo data
-        if self.hy.find_one() is None:
-            self.hy.ensure_index('name', unique=True, backgroud=True)
+        if self.gn.find_one() is None:
+            self.gn.ensure_index('name', unique=True, backgroud=True)
 
-        hy = url[url.rfind('/')+1:]
-        _data = self.hy.find_one({'name':hy})
+        gn = url[url.rfind('/')+1:]
+        _data = self.gn.find_one({'name':gn})
         if not _data:
-            _data = {'name': hy}
+            _data = {'name': gn}
 
         stockIdList = []
         for stockInfo in data['data']:
@@ -114,23 +114,11 @@ class ScrapyspiderPipeline(object):
                 stockIdList.append('SH' + stockId)
             elif stockId[0] == '0' or stockId[0] == '3':
                 stockIdList.append('SZ' + stockId)
-        _data['stockIdList'] = stockIdList
-        self.hy.save(_data)
-
-    # 保存股票的行业信息，例子 url = http://stockpage.10jqka.com.cn/spService/000687/Header/realHeader
-    def save_stock_hy_info(self, url, data):
-        index = url.find("spService")
-        stockId = url[index+10:index+16]
-        if stockId[0] == '6':
-            stockId = 'SH' + stockId
-        elif stockId[0] == '0' or stockId[0] == '3':
-            stockId = 'SZ' + stockId
-
-        _data = self.col.find_one({'stockId': stockId})
-        if not _data: return
-        _data['hy'] = data['fieldname']
-        _data['hyname'] = data['fieldjp']
-        self.col.save(_data)
+        if 'stockIdList' not in _data:
+            _data['stockIdList'] = stockIdList
+        else:
+            _data['stockIdList'].extend(stockIdList)
+        self.gn.save(_data)
 
     # 保存股票股数信息，例子 url = http://xueqiu.com/v4/stock/quote.json?code=SZ000687
     def save_stock_basic_info(self, url, data):
@@ -155,39 +143,17 @@ class ScrapyspiderPipeline(object):
             else: _data[key] = 0.0
         self.col.save(_data)
 
-    # 保存股票盘口信息，例子 url = http://xueqiu.com/stock/pankou.json?symbol=SZ000687
-    def save_stock_pankou_info(self, url, data):
-        if self.col.find_one() is None:
-            self.col.ensure_index('stockId', unique=True, backgroud=True)
-
-        # get stock id
-        stockId = url[-8:]
-        _data = self.col.find_one({'stockId': stockId})
-        if not _data:
-            _data = {'stockId': stockId}
-
-        _data['pankou'] = data
-        _data['pankou']['datetime'] = datetime.date.today().ctime()
-        self.col.save(_data)
-
-
     def process_item(self, item, spider):
         #print item
         url, data = item['src'], item['content']
-        if url.startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 行业信息
-            self.save_hy_info(url, data)
-
-        elif url.startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业信息
-            self.save_stock_hy_info(url, data)
+        if url.startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 概念信息
+            self.save_gn_info(url, data)
 
         elif url.startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息
             self.save_stock_basic_info(url, data)
 
-        elif url.startswith("http://xueqiu.com/stock/pankou.json?symbol="): # 股票盘口信息
-            self.save_stock_pankou_info(url, data)
-
-        elif url.startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票分钟级数据
-            self.save_stock_trade_info(url, data)
+        elif url.startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票1分钟级数据
+            self.save_stock_minute_info(url, data)
 
         else: # 股票价格信息
             self.save_stock_price_info(url, data)

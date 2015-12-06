@@ -24,7 +24,7 @@ class StockSpider(RedisSpider):
         try:
             item['src'] = response.url
             item['content'] = json.loads(response.body_as_unicode())
-            if item['src'].startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 行业信息
+            if item['src'].startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 概念信息
                 if item['content'].get('data'):
                     yield item
 
@@ -39,17 +39,10 @@ class StockSpider(RedisSpider):
                 if index >= 0 and item['src'][index+5:index+13] in item['content']:
                     yield item
 
-            elif item['src'].startswith("http://xueqiu.com/stock/pankou.json?symbol="): # 股票盘口信息
-                if item['content'].get('current'):
-                    yield item
-
-            elif item['src'].startswith("http://stockpage.10jqka.com.cn/spService/"): # 股票行业
-                if item['content'].get('fieldname') and item['content'].get('fieldjp'):
-                    yield item
-
             elif item['src'].startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票1分钟级数据
                 if item['content'] and item['content'][0].get('record'):
                     yield item
+
         except Exception as e:
             self.log('fail to parse content from response. url: {0}, err: {1}.'
                      ''.format(response.url, e), level=logging.WARNING)
