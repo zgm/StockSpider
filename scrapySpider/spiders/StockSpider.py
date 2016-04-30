@@ -28,13 +28,13 @@ class StockSpider(RedisSpider):
                 if item['content'].get('data'):
                     yield item
 
-            elif item['src'].startswith("http://xueqiu.com/stock/forchart/stocklist.json?symbol=") or\
-                item['src'].startswith("http://xueqiu.com/stock/forchartk/stocklist.json?symbol="): # 股票价格
+            elif item['src'].startswith("https://xueqiu.com/stock/forchart/stocklist.json?symbol=") or\
+                item['src'].startswith("https://xueqiu.com/stock/forchartk/stocklist.json?symbol="): # 股票价格
                 if item['content'].get('success')=='true' and item['content'].get('chartlist'):
                     if item['content']['chartlist'][0].get('current') != 0: # 没有停牌
                         yield item
 
-            elif item['src'].startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息（股数等）
+            elif item['src'].startswith("https://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息（股数等）
                 index = item['src'].find('code=')
                 if index >= 0 and item['src'][index+5:index+13] in item['content']:
                     yield item

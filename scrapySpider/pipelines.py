@@ -29,8 +29,8 @@ class ScrapyspiderPipeline(object):
         return cls(mongodb_uri)
 
     # 保存股票价格信息，例子
-    # http://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
-    # http://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&\
+    # https://xueqiu.com/stock/forchart/stocklist.json?symbol=SZ000681&period=1d&one_min=1
+    # https://xueqiu.com/stock/forchartk/stocklist.json?symbol=SZ000681&\
     #   period=1day&type=before&begin=1407602252104&end=1439138252104
     def save_stock_price_info(self, url, data):
         if self.col.find_one() is None:
@@ -82,12 +82,20 @@ class ScrapyspiderPipeline(object):
             _data['minute_five_datetime'] = datetime.date.today().ctime()
             if 'minute' not in _data: _data['minute'] = {}
 
+        del_date = []
+        for date in _data['minute']:
+            delta = datetime.date.today() - datetime.date(int(date[0:4]),int(date[5:7]),int(date[8:10]))
+            if delta.days > 120:
+                del_date.append(date)
+        for date in del_date:
+                del _data['minute'][date]
+
         for Info in data:
             date = Info['record'][0][0][0:10]
             if date == '2015-10-07': continue
             value, index, N = [], 0, len(Info['record'])
             for s in Info['record']:
-                s = [v.replace(',','') for v in s]
+                s = [v.replace(',','') for v in s[:5]] # time price percent volume avg_price
                 if index == 0 or index == N-1:
                     value.append([s[0],float(s[1]),float(s[2]),float(s[3]),float(s[4])])
                 else:
@@ -120,7 +128,7 @@ class ScrapyspiderPipeline(object):
             _data['stockIdList'].extend(stockIdList)
         self.gn.save(_data)
 
-    # 保存股票股数信息，例子 url = http://xueqiu.com/v4/stock/quote.json?code=SZ000687
+    # 保存股票股数信息，例子 url = https://xueqiu.com/v4/stock/quote.json?code=SZ000687
     def save_stock_basic_info(self, url, data):
         if self.col.find_one() is None:
             self.col.ensure_index('stockId', unique=True, backgroud=True)
@@ -149,7 +157,7 @@ class ScrapyspiderPipeline(object):
         if url.startswith("http://q.10jqka.com.cn/interface/stock/detail/zdf/desc/"): # 概念信息
             self.save_gn_info(url, data)
 
-        elif url.startswith("http://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息
+        elif url.startswith("https://xueqiu.com/v4/stock/quote.json?code="): # 股票基础信息
             self.save_stock_basic_info(url, data)
 
         elif url.startswith("http://api.finance.ifeng.com/aminhis/?code="): # 股票1分钟级数据
